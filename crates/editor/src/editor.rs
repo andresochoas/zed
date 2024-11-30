@@ -403,6 +403,7 @@ pub struct EditorStyle {
     pub local_player: PlayerColor,
     pub text: TextStyle,
     pub scrollbar_width: Pixels,
+    pub minimap_width: Pixels,
     pub syntax: Arc<SyntaxTheme>,
     pub status: StatusColors,
     pub inlay_hints_style: HighlightStyle,
@@ -425,6 +426,7 @@ impl Default for EditorStyle {
             inlay_hints_style: HighlightStyle::default(),
             suggestions_style: HighlightStyle::default(),
             unnecessary_code_fade: Default::default(),
+            minimap_width: Pixels::default(),
         }
     }
 }
@@ -13877,6 +13879,7 @@ impl Render for Editor {
                 local_player: cx.theme().players().local(),
                 text: text_style,
                 scrollbar_width: EditorElement::SCROLLBAR_WIDTH,
+                minimap_width: EditorElement::MINIMAP_WIDTH,
                 syntax: cx.theme().syntax().clone(),
                 status: cx.theme().status().clone(),
                 inlay_hints_style: make_inlay_hints_style(cx),

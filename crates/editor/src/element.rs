@@ -19,10 +19,10 @@ use crate::{
     BlockId, CodeActionsMenu, CursorShape, CustomBlockId, DisplayPoint, DisplayRow,
     DocumentHighlightRead, DocumentHighlightWrite, Editor, EditorMode, EditorSettings,
     EditorSnapshot, EditorStyle, ExpandExcerpts, FocusedBlock, GutterDimensions, HalfPageDown,
-    HalfPageUp, HandleInput, HoveredCursor, HoveredHunk, LineDown, LineUp, OpenExcerpts, PageDown,
-    PageUp, Point, RowExt, RowRangeExt, SelectPhase, Selection, SoftWrap, ToPoint,
-    CURSORS_VISIBLE_FOR, FILE_HEADER_HEIGHT, GIT_BLAME_MAX_AUTHOR_CHARS_DISPLAYED, MAX_LINE_LEN,
-    MULTI_BUFFER_EXCERPT_HEADER_HEIGHT,
+    HalfPageUp, HandleInput, HighlightStyles, HoveredCursor, HoveredHunk, LineDown, LineUp,
+    OpenExcerpts, PageDown, PageUp, Point, RowExt, RowRangeExt, SelectPhase, Selection, SoftWrap,
+    ToPoint, CURSORS_VISIBLE_FOR, FILE_HEADER_HEIGHT, GIT_BLAME_MAX_AUTHOR_CHARS_DISPLAYED,
+    MAX_LINE_LEN, MULTI_BUFFER_EXCERPT_HEADER_HEIGHT,
 };
 use client::ParticipantIndex;
 use collections::{BTreeMap, HashMap, HashSet};
@@ -60,7 +60,7 @@ use std::{
     cmp::{self, Ordering},
     fmt::{self, Write},
     iter, mem,
-    ops::{Deref, Range},
+    ops::{Deref, Range, Sub},
     rc::Rc,
     sync::Arc,
 };
@@ -151,6 +151,7 @@ type DisplayRowDelta = u32;
 
 impl EditorElement {
     pub(crate) const SCROLLBAR_WIDTH: Pixels = px(13.);
+    pub(crate) const MINIMAP_WIDTH: Pixels = px(46.);
 
     pub fn new(editor: &View<Editor>, style: EditorStyle) -> Self {
         Self {
@@ -3415,6 +3416,130 @@ impl EditorElement {
         })
     }
 
+    fn paint_minimap(&mut self, layout: &mut EditorLayout, cx: &mut WindowContext) {
+        cx.with_content_mask(
+            Some(ContentMask {
+                bounds: layout.minimap_hitbox.bounds,
+            }),
+            |cx| {
+                cx.paint_layer(layout.minimap_hitbox.bounds, |cx| {
+                    cx.set_cursor_style(CursorStyle::OpenHand, &layout.minimap_hitbox);
+
+                    let bounds = layout.minimap_hitbox.bounds;
+                    let line_height = layout.position_map.line_height;
+                    let max_row = layout.position_map.snapshot.max_point().row();
+                    let virtual_height = line_height * max_row.as_f32();
+
+                    // paint layout
+                    cx.paint_quad(
+                        fill(
+                            layout.minimap_hitbox.bounds,
+                            cx.theme().colors().editor_background,
+                        )
+                        .border_color(cx.theme().colors().scrollbar_track_border)
+                        .border_widths(Edges {
+                            top: Pixels::ZERO,
+                            left: ScrollbarLayout::BORDER_WIDTH,
+                            right: ScrollbarLayout::BORDER_WIDTH,
+                            bottom: Pixels::ZERO,
+                        }),
+                    );
+
+                    // paint text blocks
+                    let line_height = px(2.0);
+                    let mut span = 0;
+                    for row in 0..=max_row.as_f32() as i32 {
+                        let mut cursor = 0;
+                        for chunk in layout.position_map.snapshot.chunks(
+                            Range {
+                                start: DisplayRow(row as u32),
+                                end: DisplayRow((row + 1) as u32),
+                            },
+                            true,
+                            HighlightStyles::default(),
+                        ) {
+                            if !(chunk.text.is_empty() || chunk.is_tab || chunk.is_unnecessary) {
+                                if let Some(style) = chunk
+                                    .syntax_highlight_id
+                                    .and_then(|id| id.style(cx.theme().syntax()))
+                                {
+                                    if let Some(color) = style.color {
+                                        cx.paint_quad(fill(
+                                            Bounds {
+                                                origin: point(
+                                                    bounds.origin.x + px(cursor as f32),
+                                                    bounds.origin.y
+                                                        + px(row as f32) * line_height
+                                                        + px(span as f32),
+                                                ),
+                                                size: Size {
+                                                    width: px(chunk.text.len() as f32),
+                                                    height: line_height,
+                                                },
+                                            },
+                                            color.opacity(0.5),
+                                        ))
+                                    }
+                                }
+                            }
+                            cursor += 2;
+                        }
+                        span += span;
+                    }
+
+                    // paint cursors
+                    for (display_point, color) in &layout.cursors {
+                        cx.paint_quad(fill(
+                            Bounds {
+                                origin: point(
+                                    bounds.origin.x,
+                                    bounds.origin.y + px(display_point.row().as_f32() * 2.0),
+                                ),
+                                size: Size {
+                                    width: bounds.size.width,
+                                    height: px(2.),
+                                },
+                            },
+                            Hsla::from(color.to_rgb()),
+                        ));
+                    }
+
+                    // paint scrollbar thumb
+                    if bounds.size.height <= virtual_height {
+                        let thumb_height =
+                            bounds.size.height.0 / (virtual_height.0 / bounds.size.height.0);
+                        let fixed_line_height =
+                            (bounds.size.height.0 - thumb_height) / max_row.as_f32();
+                        let thumb_position_y =
+                            fixed_line_height * layout.position_map.snapshot.scroll_position().y;
+                        cx.paint_quad(
+                            fill(
+                                Bounds {
+                                    origin: point(
+                                        bounds.origin.x,
+                                        bounds.origin.y + px(thumb_position_y),
+                                    ),
+                                    size: Size {
+                                        width: bounds.size.width,
+                                        height: px(layout.line_numbers.len() as f32 * 2.0),
+                                    },
+                                },
+                                cx.theme().colors().scrollbar_thumb_background,
+                            )
+                            .border_color(cx.theme().colors().scrollbar_thumb_border)
+                            .border_widths(Edges {
+                                top: Pixels::ZERO,
+                                left: ScrollbarLayout::BORDER_WIDTH,
+                                right: ScrollbarLayout::BORDER_WIDTH,
+                                bottom: Pixels::ZERO,
+                            }),
+                        );
+                    }
+                });
+            },
+        )
+    }
+
     fn paint_text(&mut self, layout: &mut EditorLayout, cx: &mut WindowContext) {
         cx.with_content_mask(
             Some(ContentMask {
@@ -5037,6 +5162,16 @@ impl Element for EditorElement {
                         },
                         false,
                     );
+                    let minimap_hitbox = cx.insert_hitbox(
+                        Bounds {
+                            origin: point(
+                                text_hitbox.bounds.right() - px(84.) - self.style.scrollbar_width,
+                                gutter_hitbox.upper_right().y,
+                            ),
+                            size: size(px(84.), bounds.size.height),
+                        },
+                        false,
+                    );
                     // Offset the content_bounds from the text_bounds by the gutter margin (which
                     // is roughly half a character wide) to make hit testing work more like how we want.
                     let content_origin =
@@ -5593,6 +5728,7 @@ impl Element for EditorElement {
                         indent_guides,
                         hitbox,
                         text_hitbox,
+                        minimap_hitbox,
                         gutter_hitbox,
                         gutter_dimensions,
                         display_hunks,
@@ -5702,6 +5838,8 @@ impl Element for EditorElement {
 
                     self.paint_scrollbar(layout, cx);
                     self.paint_mouse_context_menu(layout, cx);
+
+                    self.paint_minimap(layout, cx);
                 });
             })
         })
@@ -5731,6 +5869,7 @@ pub struct EditorLayout {
     hitbox: Hitbox,
     text_hitbox: Hitbox,
     gutter_hitbox: Hitbox,
+    minimap_hitbox: Hitbox,
     gutter_dimensions: GutterDimensions,
     content_origin: gpui::Point<Pixels>,
     scrollbar_layout: Option<ScrollbarLayout>,
